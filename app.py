@@ -84,6 +84,77 @@ def get_train_after(conn, origin_id, dest_id, depart_after_dt):
         }
     return None
 
+def get_live_delay(trip_id, agency, route_id=None):
+    """
+    Fetches live GTFS-RT delays for a specific trip. Returns delay in minutes.
+    """
+    delay_minutes = 0
+    
+    try:
+        feed = gtfs_realtime_pb2.FeedMessage()
+        
+        if agency == "NJT":
+            api_key = st.secrets.get("NJT_API_KEY", "")
+            if not api_key or api_key == "your_future_njt_key_here":
+                return 0 # Fail gracefully if key isn't set yet
+                
+            url = "https://api.njtransit.com/gtfs/tripupdates"
+            headers = {"Authorization": api_key}
+            res = requests.get(url, headers=headers, timeout=5)
+            feed.ParseFromString(res.content)
+            
+        elif agency == "MTA":
+            # No API key needed for MTA feeds anymore!
+            
+            # MTA splits feeds by line group. 
+            if route_id in ['1', '2', '3', '4', '5', '6', 'S']:
+                url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs"
+            elif route_id in ['A', 'C', 'E', 'H', 'FS']:
+                url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace"
+            elif route_id in ['N', 'Q', 'R', 'W']:
+                 url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw"
+            elif route_id in ['B', 'D', 'F', 'M']:
+                 url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm"
+            elif route_id in ['L']:
+                 url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-l"
+            elif route_id in ['G']:
+                 url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g"
+            elif route_id in ['J', 'Z']:
+                 url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz"
+            elif route_id in ['7']:
+                 url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-7"
+            else:
+                return 0 # Fallback for unknown lines
+                
+            # Make the request without any headers
+            res = requests.get(url, timeout=5)
+            feed.ParseFromString(res.content)
+            
+        else:
+            # PATH real-time is often unreliable or requires third-party aggregators
+            return 0 
+
+        # Loop through the live entities to find our specific train
+        for entity in feed.entity:
+            if entity.HasField('trip_update') and entity.trip_update.trip.trip_id == str(trip_id):
+                # Get the delay of the first upcoming stop in the update
+                if len(entity.trip_update.stop_time_update) > 0:
+                    delay_seconds = entity.trip_update.stop_time_update[0].departure.delay
+                    
+                    # Some agencies omit delay but provide a new timestamp
+                    if delay_seconds == 0 and entity.trip_update.stop_time_update[0].departure.time > 0:
+                       # Advanced handling: compare live timestamp to scheduled timestamp
+                       pass
+                    
+                    delay_minutes = int(delay_seconds / 60)
+                    break
+                    
+    except Exception as e:
+        # Silently fail and return 0 delay so the app doesn't crash if an API goes down
+        print(f"Live data error for {agency}: {e}")
+        
+    return delay_minutes
+
 # ==========================================
 # 3. Geolocation Helpers
 # ==========================================
