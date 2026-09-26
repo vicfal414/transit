@@ -7,11 +7,16 @@ import io
 
 # URLs for the static GTFS zips
 # Note: Ensure you use the direct download URLs
+# FEEDS = {
+#     'MTA': 'http://web.mta.info/developers/data/nyct/subway/google_transit.zip',
+#     'NJT': 'https://s3.amazonaws.com/njtransit-open-data/lightrail_data.zip',
+#     'PATH': 'https://transitfeeds.com/p/port-authority-of-ny-nj/251/latest/download'
+# }
 FEEDS = {
-    'MTA': 'http://web.mta.info/developers/data/nyct/subway/google_transit.zip',
-    'NJT': 'https://s3.amazonaws.com/njtransit-open-data/lightrail_data.zip',
-    'PATH': 'https://transitfeeds.com/p/port-authority-of-ny-nj/251/latest/download'
-}
+        'MTA': 'http://web.mta.info/developers/data/nyct/subway/google_transit.zip',
+        'NJT': 'https://s3.amazonaws.com/njtransit-open-data/lightrail_data.zip',
+        'PATH': 'https://data.ny.gov/api/views/y4mv-s2u6/files/1e626bf4-6481-4235-976e-ea78a4b6bf57?download=true&filename=path_gtfs.zip'
+    }
 
 files_to_load = ['stops.txt', 'routes.txt', 'trips.txt', 'stop_times.txt']
 
