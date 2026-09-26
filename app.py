@@ -22,6 +22,66 @@ geolocator = Nominatim(user_agent="my_personal_commute_app_v1")
 # ==========================================
 # 2. Database Routing Functions
 # ==========================================
+
+def build_mock_database():
+    """Generates mock schedules and coordinates for testing."""
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE stop_times (trip_id TEXT, route_id TEXT, stop_id TEXT, stop_sequence INT, arrival_time TEXT, departure_time TEXT)")
+    conn.execute("CREATE TABLE stops (stop_id TEXT, stop_name TEXT, stop_lat REAL, stop_lon REAL)")
+    
+    stops = [
+        ('MTA_34_ST', '34 St - Herald Sq', 40.7497, -73.9878),
+        ('MTA_42_ST', 'Times Sq - 42 St', 40.7552, -73.9874),
+        ('MTA_14_ST', '14 St - Union Sq', 40.7346, -73.9904),
+        ('WTC_MTA', 'WTC / Fulton Center', 40.7103, -74.0090),
+        ('WTC_PATH', 'WTC Oculus', 40.7118, -74.0121),
+        ('EXCHANGE_PATH', 'Exchange Place', 40.7169, -74.0326),
+        ('EXCHANGE_HBLR', 'Exchange Place HBLR', 40.7171, -74.0321),
+        ('LSP_HBLR', 'Liberty State Park', 40.7115, -74.0535)
+    ]
+    conn.executemany("INSERT INTO stops VALUES (?, ?, ?, ?)", stops)
+    
+    mta_destinations = ['MTA_34_ST', 'MTA_42_ST', 'MTA_14_ST']
+    rows = []
+    for hour in range(0, 24):
+        for m in [0, 15, 30, 45]:
+            dep = f"{hour:02d}:{m:02d}:00"
+            
+            # MTA
+            m_arr = m + 12
+            arr_mta = f"{hour:02d}:{m_arr:02d}:00" if m_arr < 60 else f"{hour+1:02d}:{m_arr%60:02d}:00"
+            for mta_stop in mta_destinations:
+                rows.extend([
+                    (f'MTA_F_{hour}_{m}_{mta_stop}', 'A', 'WTC_MTA', 1, dep, dep),
+                    (f'MTA_F_{hour}_{m}_{mta_stop}', 'A', mta_stop, 2, arr_mta, arr_mta),
+                    (f'MTA_R_{hour}_{m}_{mta_stop}', 'A', mta_stop, 1, dep, dep),
+                    (f'MTA_R_{hour}_{m}_{mta_stop}', 'A', 'WTC_MTA', 2, arr_mta, arr_mta),
+                ])
+            
+            # PATH 
+            p_arr = m + 5
+            arr_path = f"{hour:02d}:{p_arr:02d}:00" if p_arr < 60 else f"{hour+1:02d}:{p_arr%60:02d}:00"
+            rows.extend([
+                (f'PATH_F_{hour}_{m}', 'NWK-WTC', 'EXCHANGE_PATH', 1, dep, dep),
+                (f'PATH_F_{hour}_{m}', 'NWK-WTC', 'WTC_PATH', 2, arr_path, arr_path),
+                (f'PATH_R_{hour}_{m}', 'WTC-NWK', 'WTC_PATH', 1, dep, dep),
+                (f'PATH_R_{hour}_{m}', 'WTC-NWK', 'EXCHANGE_PATH', 2, arr_path, arr_path)
+            ])
+            
+            # HBLR 
+            h_arr = m + 8
+            arr_hblr = f"{hour:02d}:{h_arr:02d}:00" if h_arr < 60 else f"{hour+1:02d}:{h_arr%60:02d}:00"
+            rows.extend([
+                (f'HBLR_F_{hour}_{m}', '8th St-Hoboken', 'LSP_HBLR', 1, dep, dep),
+                (f'HBLR_F_{hour}_{m}', '8th St-Hoboken', 'EXCHANGE_HBLR', 2, arr_hblr, arr_hblr),
+                (f'HBLR_R_{hour}_{m}', 'Hoboken-8th St', 'EXCHANGE_HBLR', 1, dep, dep),
+                (f'HBLR_R_{hour}_{m}', 'Hoboken-8th St', 'LSP_HBLR', 2, arr_hblr, arr_hblr)
+            ])
+            
+    conn.executemany("INSERT INTO stop_times VALUES (?, ?, ?, ?, ?, ?)", rows)
+    conn.commit()
+    return conn
+    
 def parse_db_time(time_str, target_date):
     """Safely converts GTFS HH:MM:SS string to a datetime object for the selected day."""
     h, m, s = map(int, time_str.split(':'))
