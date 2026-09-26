@@ -18,7 +18,14 @@ BUFFER_HBLR_TO_PATH = 4
 
 # --- UPDATE THESE IDS ONCE YOU SEE THE DEBUGGER TABLE AT THE BOTTOM ---
 # Replace the mock IDs below with the real IDs found in your database.
-STATION_WTC_MTA = "WTC_MTA"             # e.g., "MTA_E14" or "MTA_A38"
+STATION_WTC_MTA = [
+    "MTA_E01", # E Train (WTC)
+    "MTA_A38", # A/C Trains (Fulton)
+    "MTA_229", # 2/3 Trains (Fulton)
+    "MTA_418", # 4/5 Trains (Fulton)
+    "MTA_G36", # R/W Trains (Cortlandt)
+    "MTA_M22"  # J/Z Trains (Fulton)
+]
 STATION_WTC_PATH = "WTC_PATH"           # e.g., "PATH_WTC"
 STATION_EXCHANGE_PATH = "EXCHANGE_PATH" # e.g., "PATH_EXP"
 STATION_EXCHANGE_HBLR = "EXCHANGE_HBLR" # e.g., "NJT_39504"
@@ -121,13 +128,24 @@ def parse_db_time(time_str, target_date):
 
 def get_train_before(conn, origin_id, dest_id, arrive_by_dt):
     """REVERSE ROUTING: Finds the latest train arriving BEFORE the target time."""
-    query = """
+    
+    # Helper to handle both single strings and lists of IDs
+    def build_where(col_name, val):
+        if isinstance(val, list):
+            clause = " OR ".join([f"{col_name} LIKE ?"] * len(val))
+            return f"({clause})", [v + "%" for v in val]
+        return f"{col_name} LIKE ?", [val + "%"]
+
+    orig_clause, orig_params = build_where("t1.stop_id", origin_id)
+    dest_clause, dest_params = build_where("t2.stop_id", dest_id)
+    
+    query = f"""
         SELECT t1.departure_time, t2.arrival_time, t1.trip_id, tr.route_id, tr.trip_headsign
         FROM stop_times t1
         JOIN stop_times t2 ON t1.trip_id = t2.trip_id
         JOIN trips tr ON t1.trip_id = tr.trip_id
-        WHERE t1.stop_id LIKE ? 
-          AND t2.stop_id LIKE ?
+        WHERE {orig_clause} 
+          AND {dest_clause}
           AND t1.stop_sequence < t2.stop_sequence
           AND t2.arrival_time <= ?
         ORDER BY t2.arrival_time DESC
@@ -135,8 +153,8 @@ def get_train_before(conn, origin_id, dest_id, arrive_by_dt):
     """
     cur = conn.cursor()
     target_time_str = arrive_by_dt.strftime("%H:%M:%S")
-    # Added % wildcards to fix MTA direction suffixes
-    cur.execute(query, (origin_id + '%', dest_id + '%', target_time_str))
+    params = orig_params + dest_params + [target_time_str]
+    cur.execute(query, params)
     result = cur.fetchone()
     
     if result:
@@ -151,13 +169,23 @@ def get_train_before(conn, origin_id, dest_id, arrive_by_dt):
 
 def get_train_after(conn, origin_id, dest_id, depart_after_dt):
     """FORWARD ROUTING: Finds the earliest train departing AFTER the target time."""
-    query = """
+    
+    def build_where(col_name, val):
+        if isinstance(val, list):
+            clause = " OR ".join([f"{col_name} LIKE ?"] * len(val))
+            return f"({clause})", [v + "%" for v in val]
+        return f"{col_name} LIKE ?", [val + "%"]
+
+    orig_clause, orig_params = build_where("t1.stop_id", origin_id)
+    dest_clause, dest_params = build_where("t2.stop_id", dest_id)
+    
+    query = f"""
         SELECT t1.departure_time, t2.arrival_time, t1.trip_id, tr.route_id, tr.trip_headsign
         FROM stop_times t1
         JOIN stop_times t2 ON t1.trip_id = t2.trip_id
         JOIN trips tr ON t1.trip_id = tr.trip_id
-        WHERE t1.stop_id LIKE ? 
-          AND t2.stop_id LIKE ?
+        WHERE {orig_clause} 
+          AND {dest_clause}
           AND t1.stop_sequence < t2.stop_sequence
           AND t1.departure_time >= ?
         ORDER BY t1.departure_time ASC
@@ -165,8 +193,8 @@ def get_train_after(conn, origin_id, dest_id, depart_after_dt):
     """
     cur = conn.cursor()
     target_time_str = depart_after_dt.strftime("%H:%M:%S")
-    # Added % wildcards to fix MTA direction suffixes
-    cur.execute(query, (origin_id + '%', dest_id + '%', target_time_str))
+    params = orig_params + dest_params + [target_time_str]
+    cur.execute(query, params)
     result = cur.fetchone()
     
     if result:
