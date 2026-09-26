@@ -16,8 +16,6 @@ st.set_page_config(page_title="Commute Router", page_icon="🚆", layout="center
 BUFFER_WTC_TO_MTA = 6
 BUFFER_HBLR_TO_PATH = 4
 
-# --- UPDATE THESE IDS ONCE YOU SEE THE DEBUGGER TABLE AT THE BOTTOM ---
-# Replace the mock IDs below with the real IDs found in your database.
 STATION_WTC_MTA = [
     "MTA_E01", # E Train (WTC)
     "MTA_A38", # A/C Trains (Fulton)
@@ -26,10 +24,10 @@ STATION_WTC_MTA = [
     "MTA_G36", # R/W Trains (Cortlandt)
     "MTA_M22"  # J/Z Trains (Fulton)
 ]
-STATION_WTC_PATH = "WTC_PATH"           # e.g., "PATH_WTC"
-STATION_EXCHANGE_PATH = "EXCHANGE_PATH" # e.g., "PATH_EXP"
-STATION_EXCHANGE_HBLR = "EXCHANGE_HBLR" # e.g., "NJT_39504"
-STATION_LSP_HBLR = "LSP_HBLR"           # e.g., "NJT_39502"
+STATION_WTC_PATH = "WTC"
+STATION_EXCHANGE_PATH = "EXP"
+STATION_EXCHANGE_HBLR = "30834"
+STATION_LSP_HBLR = "30839"
 
 # Initialize Geocoder for Address Lookups
 geolocator = Nominatim(user_agent="my_personal_commute_app_v1")
