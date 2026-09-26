@@ -3,6 +3,8 @@ import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
 import os
+import requests
+from google.transit import gtfs_realtime_pb2
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic
 
@@ -84,19 +86,19 @@ def get_train_after(conn, origin_id, dest_id, depart_after_dt):
         }
     return None
 
+# ==========================================
+# 3. Live Delay Data (GTFS-RT)
+# ==========================================
 def get_live_delay(trip_id, agency, route_id=None):
-    """
-    Fetches live GTFS-RT delays for a specific trip. Returns delay in minutes.
-    """
+    """Fetches live GTFS-RT delays for a specific trip. Returns delay in minutes."""
     delay_minutes = 0
-    
     try:
         feed = gtfs_realtime_pb2.FeedMessage()
         
         if agency == "NJT":
             api_key = st.secrets.get("NJT_API_KEY", "")
             if not api_key or api_key == "your_future_njt_key_here":
-                return 0 # Fail gracefully if key isn't set yet
+                return 0 
                 
             url = "https://api.njtransit.com/gtfs/tripupdates"
             headers = {"Authorization": api_key}
@@ -104,9 +106,6 @@ def get_live_delay(trip_id, agency, route_id=None):
             feed.ParseFromString(res.content)
             
         elif agency == "MTA":
-            # No API key needed for MTA feeds anymore!
-            
-            # MTA splits feeds by line group. 
             if route_id in ['1', '2', '3', '4', '5', '6', 'S']:
                 url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs"
             elif route_id in ['A', 'C', 'E', 'H', 'FS']:
@@ -124,39 +123,28 @@ def get_live_delay(trip_id, agency, route_id=None):
             elif route_id in ['7']:
                  url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-7"
             else:
-                return 0 # Fallback for unknown lines
+                return 0 
                 
-            # Make the request without any headers
             res = requests.get(url, timeout=5)
             feed.ParseFromString(res.content)
             
         else:
-            # PATH real-time is often unreliable or requires third-party aggregators
             return 0 
 
-        # Loop through the live entities to find our specific train
         for entity in feed.entity:
             if entity.HasField('trip_update') and entity.trip_update.trip.trip_id == str(trip_id):
-                # Get the delay of the first upcoming stop in the update
                 if len(entity.trip_update.stop_time_update) > 0:
                     delay_seconds = entity.trip_update.stop_time_update[0].departure.delay
-                    
-                    # Some agencies omit delay but provide a new timestamp
-                    if delay_seconds == 0 and entity.trip_update.stop_time_update[0].departure.time > 0:
-                       # Advanced handling: compare live timestamp to scheduled timestamp
-                       pass
-                    
                     delay_minutes = int(delay_seconds / 60)
                     break
                     
     except Exception as e:
-        # Silently fail and return 0 delay so the app doesn't crash if an API goes down
         print(f"Live data error for {agency}: {e}")
         
     return delay_minutes
 
 # ==========================================
-# 3. Geolocation Helpers
+# 4. Geolocation Helpers
 # ==========================================
 def get_coordinates(address: str):
     """Converts a street address to (latitude, longitude)."""
@@ -179,7 +167,6 @@ def find_nearest_stop(conn, user_lat, user_lon):
     stops_df['dist_miles'] = stops_df.apply(calc_dist, axis=1)
     nearest = stops_df.sort_values(by='dist_miles').iloc[0]
     
-    # Estimate walk time (20 mins per mile ~ 3 mph)
     walk_mins = max(1, round(nearest['dist_miles'] * 20))
     
     return {
@@ -190,14 +177,12 @@ def find_nearest_stop(conn, user_lat, user_lon):
     }
 
 # ==========================================
-# 4. App UI & Input
+# 5. App UI & Input
 # ==========================================
 st.title("LSP $\\leftrightarrow$ NYC Commute")
 
-# 1. Choose Direction
 direction = st.radio("Trip Direction:", ["Going to NYC", "Going Home (to LSP)"], horizontal=True)
 
-# 2. Choose Day and Destination Address
 col1, col2 = st.columns(2)
 with col1:
     target_date = st.date_input("Day of trip", value=datetime.today())
@@ -210,7 +195,7 @@ with col2:
 address_input = st.text_input("Enter NYC Destination Address:", placeholder="e.g. 350 5th Ave or Empire State Building")
 
 # ==========================================
-# 5. Routing Execution
+# 6. Routing Execution
 # ==========================================
 if st.button("Calculate Route", type="primary"):
     
@@ -220,7 +205,6 @@ if st.button("Calculate Route", type="primary"):
         
     target_dt = datetime.combine(target_date, target_time)
     
-    # Load DB
     if os.path.exists("timetable.sqlite"):
         conn = sqlite3.connect("timetable.sqlite")
     else:
@@ -229,7 +213,6 @@ if st.button("Calculate Route", type="primary"):
 
     with st.spinner("Finding nearest station and calculating optimal route..."):
         
-        # Geocode the address
         dest_lat, dest_lon, matched_addr = get_coordinates(address_input)
         if not dest_lat:
             st.error("Could not find that address. Try adding more detail.")
@@ -247,9 +230,7 @@ if st.button("Calculate Route", type="primary"):
         st.info(f"📍 Target Location: {matched_addr}\n\n" 
                 f"🚶 Nearest Station: **{destination_name}** ({nearest_mta['distance_miles']} mi away, ~{walk_time} min walk)")
 
-        # Routing Math
         if direction == "Going to NYC":
-            # Target Arrival at final building
             target_train_arrival = target_dt - timedelta(minutes=walk_time)
             
             mta_leg = get_train_before(conn, "WTC_MTA", mta_id, target_train_arrival)
@@ -263,13 +244,19 @@ if st.button("Calculate Route", type="primary"):
             hblr_leg = get_train_before(conn, "LSP_HBLR", "EXCHANGE_HBLR", hblr_target)
             if not hblr_leg: st.error("No HBLR trains found."); st.stop()
             
-            # Render Going to NYC
-            st.success(f"To arrive at your destination by {target_dt.strftime('%I:%M %p')}, leave home at **{hblr_leg['depart'].strftime('%I:%M %p')}**.")
+            # Fetch Delays
+            hblr_delay = get_live_delay(hblr_leg["trip_id"], "NJT")
+            mta_delay = get_live_delay(mta_leg["trip_id"], "MTA", mta_leg["route"])
+            
+            hblr_actual_depart = hblr_leg["depart"] + timedelta(minutes=hblr_delay)
+            mta_actual_depart = mta_leg["depart"] + timedelta(minutes=mta_delay)
+            
+            st.success(f"To arrive at your destination by {target_dt.strftime('%I:%M %p')}, leave home at **{hblr_actual_depart.strftime('%I:%M %p')}**.")
             
             st.subheader("Step 1: NJ Transit Light Rail")
             c1, c2 = st.columns(2)
-            c1.metric("Depart Liberty State Park", hblr_leg["depart"].strftime('%I:%M %p'))
-            c2.metric("Arrive Exchange Place", hblr_leg["arrive"].strftime('%I:%M %p'))
+            c1.metric("Depart Liberty State Park", hblr_actual_depart.strftime('%I:%M %p'), delta=f"{hblr_delay} min late" if hblr_delay > 0 else "On time", delta_color="inverse")
+            c2.metric("Arrive Exchange Place", (hblr_leg["arrive"] + timedelta(minutes=hblr_delay)).strftime('%I:%M %p'))
             st.caption(f"🚶 *Walk {BUFFER_HBLR_TO_PATH} mins to the PATH platforms*")
             
             st.subheader("Step 2: PATH Train")
@@ -281,11 +268,11 @@ if st.button("Calculate Route", type="primary"):
             st.subheader("Step 3: MTA Subway")
             st.info(f"🚆 Take the **{mta_leg['route']}** from the WTC/Fulton St complex.")
             c1, c2 = st.columns(2)
-            c1.metric("Depart WTC / Fulton St", mta_leg["depart"].strftime('%I:%M %p'))
-            c2.metric(f"Arrive {destination_name}", mta_leg["arrive"].strftime('%I:%M %p'))
+            c1.metric("Depart WTC / Fulton St", mta_actual_depart.strftime('%I:%M %p'), delta=f"{mta_delay} min late" if mta_delay > 0 else "On time", delta_color="inverse")
+            c2.metric(f"Arrive {destination_name}", (mta_leg["arrive"] + timedelta(minutes=mta_delay)).strftime('%I:%M %p'))
 
         else:
-            # direction == "Going Home (to LSP)"
+            # direction == "Going Home"
             mta_leg_depart = target_dt + timedelta(minutes=walk_time)
             
             mta_leg = get_train_after(conn, mta_id, "WTC_MTA", mta_leg_depart)
@@ -299,15 +286,21 @@ if st.button("Calculate Route", type="primary"):
             hblr_leg = get_train_after(conn, "EXCHANGE_HBLR", "LSP_HBLR", hblr_target)
             if not hblr_leg: st.error("No HBLR trains found."); st.stop()
             
-            # Render Going Home
-            final_arrival = hblr_leg["arrive"]
+            # Fetch Delays
+            mta_delay = get_live_delay(mta_leg["trip_id"], "MTA", mta_leg["route"])
+            hblr_delay = get_live_delay(hblr_leg["trip_id"], "NJT")
+            
+            mta_actual_depart = mta_leg["depart"] + timedelta(minutes=mta_delay)
+            hblr_actual_depart = hblr_leg["depart"] + timedelta(minutes=hblr_delay)
+            final_arrival = hblr_leg["arrive"] + timedelta(minutes=hblr_delay)
+            
             st.success(f"If you leave your location at {target_dt.strftime('%I:%M %p')}, you will be back at Liberty State Park by **{final_arrival.strftime('%I:%M %p')}**.")
             
             st.subheader("Step 1: MTA Subway")
             st.info(f"🚆 Take the **{mta_leg['route']}** going Downtown toward WTC/Fulton St.")
             c1, c2 = st.columns(2)
-            c1.metric(f"Depart {destination_name}", mta_leg["depart"].strftime('%I:%M %p'))
-            c2.metric("Arrive WTC / Fulton St", mta_leg["arrive"].strftime('%I:%M %p'))
+            c1.metric(f"Depart {destination_name}", mta_actual_depart.strftime('%I:%M %p'), delta=f"{mta_delay} min late" if mta_delay > 0 else "On time", delta_color="inverse")
+            c2.metric("Arrive WTC / Fulton St", (mta_leg["arrive"] + timedelta(minutes=mta_delay)).strftime('%I:%M %p'))
             st.caption(f"🚶 *Walk {BUFFER_WTC_TO_MTA} mins through Oculus to PATH platforms*")
             
             st.subheader("Step 2: PATH Train")
@@ -318,11 +311,11 @@ if st.button("Calculate Route", type="primary"):
             
             st.subheader("Step 3: NJ Transit Light Rail")
             c1, c2 = st.columns(2)
-            c1.metric("Depart Exchange Place", hblr_leg["depart"].strftime('%I:%M %p'))
-            c2.metric("Arrive Liberty State Park", hblr_leg["arrive"].strftime('%I:%M %p'))
+            c1.metric("Depart Exchange Place", hblr_actual_depart.strftime('%I:%M %p'), delta=f"{hblr_delay} min late" if hblr_delay > 0 else "On time", delta_color="inverse")
+            c2.metric("Arrive Liberty State Park", final_arrival.strftime('%I:%M %p'))
 
 # ==========================================
-# 6. Dynamic Mock DB Generator
+# 7. Dynamic Mock DB Generator
 # ==========================================
 def build_mock_database():
     """Generates mock schedules and coordinates for testing."""
@@ -330,7 +323,6 @@ def build_mock_database():
     conn.execute("CREATE TABLE stop_times (trip_id TEXT, route_id TEXT, stop_id TEXT, stop_sequence INT, arrival_time TEXT, departure_time TEXT)")
     conn.execute("CREATE TABLE stops (stop_id TEXT, stop_name TEXT, stop_lat REAL, stop_lon REAL)")
     
-    # Mock Stops Data (Includes real coords for midtown for testing)
     stops = [
         ('MTA_34_ST', '34 St - Herald Sq', 40.7497, -73.9878),
         ('MTA_42_ST', 'Times Sq - 42 St', 40.7552, -73.9874),
@@ -354,10 +346,10 @@ def build_mock_database():
             arr_mta = f"{hour:02d}:{m_arr:02d}:00" if m_arr < 60 else f"{hour+1:02d}:{m_arr%60:02d}:00"
             for mta_stop in mta_destinations:
                 rows.extend([
-                    (f'MTA_F_{hour}_{m}_{mta_stop}', 'A/C Line', 'WTC_MTA', 1, dep, dep),
-                    (f'MTA_F_{hour}_{m}_{mta_stop}', 'A/C Line', mta_stop, 2, arr_mta, arr_mta),
-                    (f'MTA_R_{hour}_{m}_{mta_stop}', 'A/C Line', mta_stop, 1, dep, dep),
-                    (f'MTA_R_{hour}_{m}_{mta_stop}', 'A/C Line', 'WTC_MTA', 2, arr_mta, arr_mta),
+                    (f'MTA_F_{hour}_{m}_{mta_stop}', 'A', 'WTC_MTA', 1, dep, dep),
+                    (f'MTA_F_{hour}_{m}_{mta_stop}', 'A', mta_stop, 2, arr_mta, arr_mta),
+                    (f'MTA_R_{hour}_{m}_{mta_stop}', 'A', mta_stop, 1, dep, dep),
+                    (f'MTA_R_{hour}_{m}_{mta_stop}', 'A', 'WTC_MTA', 2, arr_mta, arr_mta),
                 ])
             
             # PATH 
