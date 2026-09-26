@@ -20,13 +20,15 @@ BUFFER_HBLR_TO_PATH = 4
 geolocator = Nominatim(user_agent="my_personal_commute_app_v1")
 
 # ==========================================
-# 2. Database Routing Functions
+# 2. Dynamic Mock DB Generator (Moved UP to fix NameError)
 # ==========================================
-
 def build_mock_database():
     """Generates mock schedules and coordinates for testing."""
     conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE stop_times (trip_id TEXT, route_id TEXT, stop_id TEXT, stop_sequence INT, arrival_time TEXT, departure_time TEXT)")
+    
+    # Create tables
+    conn.execute("CREATE TABLE trips (trip_id TEXT, route_id TEXT, trip_headsign TEXT)")
+    conn.execute("CREATE TABLE stop_times (trip_id TEXT, stop_id TEXT, stop_sequence INT, arrival_time TEXT, departure_time TEXT)")
     conn.execute("CREATE TABLE stops (stop_id TEXT, stop_name TEXT, stop_lat REAL, stop_lon REAL)")
     
     stops = [
@@ -42,46 +44,68 @@ def build_mock_database():
     conn.executemany("INSERT INTO stops VALUES (?, ?, ?, ?)", stops)
     
     mta_destinations = ['MTA_34_ST', 'MTA_42_ST', 'MTA_14_ST']
-    rows = []
+    stop_times_rows = []
+    trips_rows = []
+    
     for hour in range(0, 24):
         for m in [0, 15, 30, 45]:
             dep = f"{hour:02d}:{m:02d}:00"
             
-            # MTA
+            # --- MTA ---
             m_arr = m + 12
             arr_mta = f"{hour:02d}:{m_arr:02d}:00" if m_arr < 60 else f"{hour+1:02d}:{m_arr%60:02d}:00"
             for mta_stop in mta_destinations:
-                rows.extend([
-                    (f'MTA_F_{hour}_{m}_{mta_stop}', 'A', 'WTC_MTA', 1, dep, dep),
-                    (f'MTA_F_{hour}_{m}_{mta_stop}', 'A', mta_stop, 2, arr_mta, arr_mta),
-                    (f'MTA_R_{hour}_{m}_{mta_stop}', 'A', mta_stop, 1, dep, dep),
-                    (f'MTA_R_{hour}_{m}_{mta_stop}', 'A', 'WTC_MTA', 2, arr_mta, arr_mta),
+                # Forward (Uptown / Northbound)
+                trip_f = f'MTA_F_{hour}_{m}_{mta_stop}..N'
+                trips_rows.append((trip_f, 'A', 'Inwood-207 St'))
+                stop_times_rows.extend([
+                    (trip_f, 'WTC_MTA', 1, dep, dep),
+                    (trip_f, mta_stop, 2, arr_mta, arr_mta),
+                ])
+                # Reverse (Downtown / Southbound)
+                trip_r = f'MTA_R_{hour}_{m}_{mta_stop}..S'
+                trips_rows.append((trip_r, 'A', 'Far Rockaway-Mott Av'))
+                stop_times_rows.extend([
+                    (trip_r, mta_stop, 1, dep, dep),
+                    (trip_r, 'WTC_MTA', 2, arr_mta, arr_mta),
                 ])
             
-            # PATH 
+            # --- PATH ---
             p_arr = m + 5
             arr_path = f"{hour:02d}:{p_arr:02d}:00" if p_arr < 60 else f"{hour+1:02d}:{p_arr%60:02d}:00"
-            rows.extend([
-                (f'PATH_F_{hour}_{m}', 'NWK-WTC', 'EXCHANGE_PATH', 1, dep, dep),
-                (f'PATH_F_{hour}_{m}', 'NWK-WTC', 'WTC_PATH', 2, arr_path, arr_path),
-                (f'PATH_R_{hour}_{m}', 'WTC-NWK', 'WTC_PATH', 1, dep, dep),
-                (f'PATH_R_{hour}_{m}', 'WTC-NWK', 'EXCHANGE_PATH', 2, arr_path, arr_path)
+            trips_rows.extend([
+                (f'PATH_F_{hour}_{m}', 'NWK-WTC', 'World Trade Center'),
+                (f'PATH_R_{hour}_{m}', 'WTC-NWK', 'Newark Penn Station')
+            ])
+            stop_times_rows.extend([
+                (f'PATH_F_{hour}_{m}', 'EXCHANGE_PATH', 1, dep, dep),
+                (f'PATH_F_{hour}_{m}', 'WTC_PATH', 2, arr_path, arr_path),
+                (f'PATH_R_{hour}_{m}', 'WTC_PATH', 1, dep, dep),
+                (f'PATH_R_{hour}_{m}', 'EXCHANGE_PATH', 2, arr_path, arr_path)
             ])
             
-            # HBLR 
+            # --- HBLR ---
             h_arr = m + 8
             arr_hblr = f"{hour:02d}:{h_arr:02d}:00" if h_arr < 60 else f"{hour+1:02d}:{h_arr%60:02d}:00"
-            rows.extend([
-                (f'HBLR_F_{hour}_{m}', '8th St-Hoboken', 'LSP_HBLR', 1, dep, dep),
-                (f'HBLR_F_{hour}_{m}', '8th St-Hoboken', 'EXCHANGE_HBLR', 2, arr_hblr, arr_hblr),
-                (f'HBLR_R_{hour}_{m}', 'Hoboken-8th St', 'EXCHANGE_HBLR', 1, dep, dep),
-                (f'HBLR_R_{hour}_{m}', 'Hoboken-8th St', 'LSP_HBLR', 2, arr_hblr, arr_hblr)
+            trips_rows.extend([
+                (f'HBLR_F_{hour}_{m}', '8th St-Hoboken', 'Hoboken Terminal'),
+                (f'HBLR_R_{hour}_{m}', 'Hoboken-8th St', '8th Street')
+            ])
+            stop_times_rows.extend([
+                (f'HBLR_F_{hour}_{m}', 'LSP_HBLR', 1, dep, dep),
+                (f'HBLR_F_{hour}_{m}', 'EXCHANGE_HBLR', 2, arr_hblr, arr_hblr),
+                (f'HBLR_R_{hour}_{m}', 'EXCHANGE_HBLR', 1, dep, dep),
+                (f'HBLR_R_{hour}_{m}', 'LSP_HBLR', 2, arr_hblr, arr_hblr)
             ])
             
-    conn.executemany("INSERT INTO stop_times VALUES (?, ?, ?, ?, ?, ?)", rows)
+    conn.executemany("INSERT INTO stop_times VALUES (?, ?, ?, ?, ?)", stop_times_rows)
+    conn.executemany("INSERT INTO trips VALUES (?, ?, ?)", trips_rows)
     conn.commit()
     return conn
-    
+
+# ==========================================
+# 3. Database Routing Functions
+# ==========================================
 def parse_db_time(time_str, target_date):
     """Safely converts GTFS HH:MM:SS string to a datetime object for the selected day."""
     h, m, s = map(int, time_str.split(':'))
@@ -93,9 +117,10 @@ def parse_db_time(time_str, target_date):
 def get_train_before(conn, origin_id, dest_id, arrive_by_dt):
     """REVERSE ROUTING: Finds the latest train arriving BEFORE the target time."""
     query = """
-        SELECT t1.departure_time, t2.arrival_time, t1.trip_id, t1.route_id
+        SELECT t1.departure_time, t2.arrival_time, t1.trip_id, tr.route_id, tr.trip_headsign
         FROM stop_times t1
         JOIN stop_times t2 ON t1.trip_id = t2.trip_id
+        JOIN trips tr ON t1.trip_id = tr.trip_id
         WHERE t1.stop_id = ? 
           AND t2.stop_id = ?
           AND t1.stop_sequence < t2.stop_sequence
@@ -109,21 +134,22 @@ def get_train_before(conn, origin_id, dest_id, arrive_by_dt):
     result = cur.fetchone()
     
     if result:
-        dep_str, arr_str, trip_id, route_id = result
+        dep_str, arr_str, trip_id, route_id, headsign = result
         target_date = arrive_by_dt.date()
         return {
             "depart": parse_db_time(dep_str, target_date),
             "arrive": parse_db_time(arr_str, target_date),
-            "trip_id": trip_id, "route": route_id
+            "trip_id": trip_id, "route": route_id, "headsign": headsign
         }
     return None
 
 def get_train_after(conn, origin_id, dest_id, depart_after_dt):
     """FORWARD ROUTING: Finds the earliest train departing AFTER the target time."""
     query = """
-        SELECT t1.departure_time, t2.arrival_time, t1.trip_id, t1.route_id
+        SELECT t1.departure_time, t2.arrival_time, t1.trip_id, tr.route_id, tr.trip_headsign
         FROM stop_times t1
         JOIN stop_times t2 ON t1.trip_id = t2.trip_id
+        JOIN trips tr ON t1.trip_id = tr.trip_id
         WHERE t1.stop_id = ? 
           AND t2.stop_id = ?
           AND t1.stop_sequence < t2.stop_sequence
@@ -137,17 +163,17 @@ def get_train_after(conn, origin_id, dest_id, depart_after_dt):
     result = cur.fetchone()
     
     if result:
-        dep_str, arr_str, trip_id, route_id = result
+        dep_str, arr_str, trip_id, route_id, headsign = result
         target_date = depart_after_dt.date()
         return {
             "depart": parse_db_time(dep_str, target_date),
             "arrive": parse_db_time(arr_str, target_date),
-            "trip_id": trip_id, "route": route_id
+            "trip_id": trip_id, "route": route_id, "headsign": headsign
         }
     return None
 
 # ==========================================
-# 3. Live Delay Data (GTFS-RT)
+# 4. Live Delay Data (GTFS-RT)
 # ==========================================
 def get_live_delay(trip_id, agency, route_id=None):
     """Fetches live GTFS-RT delays for a specific trip. Returns delay in minutes."""
@@ -204,7 +230,7 @@ def get_live_delay(trip_id, agency, route_id=None):
     return delay_minutes
 
 # ==========================================
-# 4. Geolocation Helpers
+# 5. Geolocation Helpers
 # ==========================================
 def get_coordinates(address: str):
     """Converts a street address to (latitude, longitude)."""
@@ -237,7 +263,7 @@ def find_nearest_stop(conn, user_lat, user_lon):
     }
 
 # ==========================================
-# 5. App UI & Input
+# 6. App UI & Input
 # ==========================================
 st.title("LSP $\\leftrightarrow$ NYC Commute")
 
@@ -255,7 +281,7 @@ with col2:
 address_input = st.text_input("Enter NYC Destination Address:", placeholder="e.g. 350 5th Ave or Empire State Building")
 
 # ==========================================
-# 6. Routing Execution
+# 7. Routing Execution
 # ==========================================
 if st.button("Calculate Route", type="primary"):
     
@@ -326,7 +352,12 @@ if st.button("Calculate Route", type="primary"):
             st.caption(f"🚶 *Walk {BUFFER_WTC_TO_MTA} mins through Oculus to the Subway*")
             
             st.subheader("Step 3: MTA Subway")
-            st.info(f"🚆 Take the **{mta_leg['route']}** from the WTC/Fulton St complex.")
+            
+            # Determine direction from trip_id suffix
+            mta_direction = "Uptown" if mta_leg['trip_id'].endswith('N') else "Downtown"
+            
+            st.info(f"🚆 Take the **{mta_direction} {mta_leg['route']} Train** toward **{mta_leg['headsign']}**.")
+            
             c1, c2 = st.columns(2)
             c1.metric("Depart WTC / Fulton St", mta_actual_depart.strftime('%I:%M %p'), delta=f"{mta_delay} min late" if mta_delay > 0 else "On time", delta_color="inverse")
             c2.metric(f"Arrive {destination_name}", (mta_leg["arrive"] + timedelta(minutes=mta_delay)).strftime('%I:%M %p'))
@@ -357,7 +388,12 @@ if st.button("Calculate Route", type="primary"):
             st.success(f"If you leave your location at {target_dt.strftime('%I:%M %p')}, you will be back at Liberty State Park by **{final_arrival.strftime('%I:%M %p')}**.")
             
             st.subheader("Step 1: MTA Subway")
-            st.info(f"🚆 Take the **{mta_leg['route']}** going Downtown toward WTC/Fulton St.")
+            
+            # Determine direction from trip_id suffix
+            mta_direction = "Downtown" if mta_leg['trip_id'].endswith('S') else "Uptown"
+            
+            st.info(f"🚆 Take the **{mta_direction} {mta_leg['route']} Train** toward **{mta_leg['headsign']}**.")
+            
             c1, c2 = st.columns(2)
             c1.metric(f"Depart {destination_name}", mta_actual_depart.strftime('%I:%M %p'), delta=f"{mta_delay} min late" if mta_delay > 0 else "On time", delta_color="inverse")
             c2.metric("Arrive WTC / Fulton St", (mta_leg["arrive"] + timedelta(minutes=mta_delay)).strftime('%I:%M %p'))
@@ -373,65 +409,3 @@ if st.button("Calculate Route", type="primary"):
             c1, c2 = st.columns(2)
             c1.metric("Depart Exchange Place", hblr_actual_depart.strftime('%I:%M %p'), delta=f"{hblr_delay} min late" if hblr_delay > 0 else "On time", delta_color="inverse")
             c2.metric("Arrive Liberty State Park", final_arrival.strftime('%I:%M %p'))
-
-# ==========================================
-# 7. Dynamic Mock DB Generator
-# ==========================================
-def build_mock_database():
-    """Generates mock schedules and coordinates for testing."""
-    conn = sqlite3.connect(":memory:")
-    conn.execute("CREATE TABLE stop_times (trip_id TEXT, route_id TEXT, stop_id TEXT, stop_sequence INT, arrival_time TEXT, departure_time TEXT)")
-    conn.execute("CREATE TABLE stops (stop_id TEXT, stop_name TEXT, stop_lat REAL, stop_lon REAL)")
-    
-    stops = [
-        ('MTA_34_ST', '34 St - Herald Sq', 40.7497, -73.9878),
-        ('MTA_42_ST', 'Times Sq - 42 St', 40.7552, -73.9874),
-        ('MTA_14_ST', '14 St - Union Sq', 40.7346, -73.9904),
-        ('WTC_MTA', 'WTC / Fulton Center', 40.7103, -74.0090),
-        ('WTC_PATH', 'WTC Oculus', 40.7118, -74.0121),
-        ('EXCHANGE_PATH', 'Exchange Place', 40.7169, -74.0326),
-        ('EXCHANGE_HBLR', 'Exchange Place HBLR', 40.7171, -74.0321),
-        ('LSP_HBLR', 'Liberty State Park', 40.7115, -74.0535)
-    ]
-    conn.executemany("INSERT INTO stops VALUES (?, ?, ?, ?)", stops)
-    
-    mta_destinations = ['MTA_34_ST', 'MTA_42_ST', 'MTA_14_ST']
-    rows = []
-    for hour in range(0, 24):
-        for m in [0, 15, 30, 45]:
-            dep = f"{hour:02d}:{m:02d}:00"
-            
-            # MTA
-            m_arr = m + 12
-            arr_mta = f"{hour:02d}:{m_arr:02d}:00" if m_arr < 60 else f"{hour+1:02d}:{m_arr%60:02d}:00"
-            for mta_stop in mta_destinations:
-                rows.extend([
-                    (f'MTA_F_{hour}_{m}_{mta_stop}', 'A', 'WTC_MTA', 1, dep, dep),
-                    (f'MTA_F_{hour}_{m}_{mta_stop}', 'A', mta_stop, 2, arr_mta, arr_mta),
-                    (f'MTA_R_{hour}_{m}_{mta_stop}', 'A', mta_stop, 1, dep, dep),
-                    (f'MTA_R_{hour}_{m}_{mta_stop}', 'A', 'WTC_MTA', 2, arr_mta, arr_mta),
-                ])
-            
-            # PATH 
-            p_arr = m + 5
-            arr_path = f"{hour:02d}:{p_arr:02d}:00" if p_arr < 60 else f"{hour+1:02d}:{p_arr%60:02d}:00"
-            rows.extend([
-                (f'PATH_F_{hour}_{m}', 'NWK-WTC', 'EXCHANGE_PATH', 1, dep, dep),
-                (f'PATH_F_{hour}_{m}', 'NWK-WTC', 'WTC_PATH', 2, arr_path, arr_path),
-                (f'PATH_R_{hour}_{m}', 'WTC-NWK', 'WTC_PATH', 1, dep, dep),
-                (f'PATH_R_{hour}_{m}', 'WTC-NWK', 'EXCHANGE_PATH', 2, arr_path, arr_path)
-            ])
-            
-            # HBLR 
-            h_arr = m + 8
-            arr_hblr = f"{hour:02d}:{h_arr:02d}:00" if h_arr < 60 else f"{hour+1:02d}:{h_arr%60:02d}:00"
-            rows.extend([
-                (f'HBLR_F_{hour}_{m}', '8th St-Hoboken', 'LSP_HBLR', 1, dep, dep),
-                (f'HBLR_F_{hour}_{m}', '8th St-Hoboken', 'EXCHANGE_HBLR', 2, arr_hblr, arr_hblr),
-                (f'HBLR_R_{hour}_{m}', 'Hoboken-8th St', 'EXCHANGE_HBLR', 1, dep, dep),
-                (f'HBLR_R_{hour}_{m}', 'Hoboken-8th St', 'LSP_HBLR', 2, arr_hblr, arr_hblr)
-            ])
-            
-    conn.executemany("INSERT INTO stop_times VALUES (?, ?, ?, ?, ?, ?)", rows)
-    conn.commit()
-    return conn
