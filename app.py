@@ -115,14 +115,13 @@ def parse_db_time(time_str, target_date):
     return dt
 
 def get_train_before(conn, origin_id, dest_id, arrive_by_dt):
-    """REVERSE ROUTING: Finds the latest train arriving BEFORE the target time."""
     query = """
         SELECT t1.departure_time, t2.arrival_time, t1.trip_id, tr.route_id, tr.trip_headsign
         FROM stop_times t1
         JOIN stop_times t2 ON t1.trip_id = t2.trip_id
         JOIN trips tr ON t1.trip_id = tr.trip_id
-        WHERE t1.stop_id = ? 
-          AND t2.stop_id = ?
+        WHERE t1.stop_id LIKE ? 
+          AND t2.stop_id LIKE ?
           AND t1.stop_sequence < t2.stop_sequence
           AND t2.arrival_time <= ?
         ORDER BY t2.arrival_time DESC
@@ -130,7 +129,8 @@ def get_train_before(conn, origin_id, dest_id, arrive_by_dt):
     """
     cur = conn.cursor()
     target_time_str = arrive_by_dt.strftime("%H:%M:%S")
-    cur.execute(query, (origin_id, dest_id, target_time_str))
+    # Add the % wildcard here
+    cur.execute(query, (origin_id + '%', dest_id + '%', target_time_str))
     result = cur.fetchone()
     
     if result:
@@ -150,8 +150,8 @@ def get_train_after(conn, origin_id, dest_id, depart_after_dt):
         FROM stop_times t1
         JOIN stop_times t2 ON t1.trip_id = t2.trip_id
         JOIN trips tr ON t1.trip_id = tr.trip_id
-        WHERE t1.stop_id = ? 
-          AND t2.stop_id = ?
+        WHERE t1.stop_id LIKE ? 
+          AND t2.stop_id LIKE ?
           AND t1.stop_sequence < t2.stop_sequence
           AND t1.departure_time >= ?
         ORDER BY t1.departure_time ASC
@@ -409,3 +409,14 @@ if st.button("Calculate Route", type="primary"):
             c1, c2 = st.columns(2)
             c1.metric("Depart Exchange Place", hblr_actual_depart.strftime('%I:%M %p'), delta=f"{hblr_delay} min late" if hblr_delay > 0 else "On time", delta_color="inverse")
             c2.metric("Arrive Liberty State Park", final_arrival.strftime('%I:%M %p'))
+
+st.divider()
+st.subheader("Database Debugger (Find your IDs)")
+debug_query = """
+SELECT stop_id, stop_name FROM stops 
+WHERE stop_name LIKE '%Exchange Place%' 
+   OR stop_name LIKE '%World Trade Center%' 
+   OR stop_name LIKE '%Liberty State Park%'
+   OR stop_name LIKE '%Fulton%'
+"""
+st.dataframe(pd.read_sql(debug_query, conn))
