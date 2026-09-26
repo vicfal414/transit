@@ -2,20 +2,16 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
-import requests
-from google.transit import gtfs_realtime_pb2
 import os
 
 # ==========================================
-# 1. Configuration & Secrets
+# 1. Configuration & Constants
 # ==========================================
 st.set_page_config(page_title="Commute Router", page_icon="🚆", layout="centered")
 
 BUFFER_WTC_TO_MTA = 6
 BUFFER_HBLR_TO_PATH = 4
-NJT_API_KEY = st.secrets.get("NJT_API_KEY", "")
 
-# Map human-readable dropdown names to your exact database stop_ids
 MTA_STOPS = {
     "Times Sq (1/2/3)": "MTA_TIMES_SQ",
     "Union Sq (4/5/6)": "MTA_UNION_SQ",
@@ -23,14 +19,22 @@ MTA_STOPS = {
 }
 
 # ==========================================
-# 2. Database Helper (Reverse Routing)
+# 2. Database Routing Functions
 # ==========================================
-def get_train_before(conn, origin_id, dest_id, arrive_by_time):
-    """
-    Finds the latest train that leaves origin_id and arrives at dest_id BEFORE arrive_by_time.
-    """
+def parse_db_time(time_str, target_date):
+    """Safely converts GTFS HH:MM:SS string to a datetime object for the selected day."""
+    # GTFS times can exceed 24:00:00 for late-night trains, so we handle standard formats first.
+    h, m, s = map(int, time_str.split(':'))
+    extra_days = h // 24
+    h = h % 24
+    
+    dt = datetime.combine(target_date, datetime.min.time()) + timedelta(days=extra_days, hours=h, minutes=m, seconds=s)
+    return dt
+
+def get_train_before(conn, origin_id, dest_id, arrive_by_dt):
+    """REVERSE ROUTING: Finds the latest train arriving BEFORE the target time."""
     query = """
-        SELECT t1.departure_time, t2.arrival_time, t1.trip_id, t1.route_id, t1.stop_id, t2.stop_id
+        SELECT t1.departure_time, t2.arrival_time, t1.trip_id, t1.route_id
         FROM stop_times t1
         JOIN stop_times t2 ON t1.trip_id = t2.trip_id
         WHERE t1.stop_id = ? 
@@ -41,48 +45,77 @@ def get_train_before(conn, origin_id, dest_id, arrive_by_time):
         LIMIT 1;
     """
     cur = conn.cursor()
-    cur.execute(query, (origin_id, dest_id, arrive_by_time.strftime("%H:%M:%S")))
+    target_time_str = arrive_by_dt.strftime("%H:%M:%S")
+    cur.execute(query, (origin_id, dest_id, target_time_str))
     result = cur.fetchone()
     
     if result:
-        dep_str, arr_str, trip_id, route_id, orig_stop, dest_stop = result
-        today = datetime.now().date()
-        # Handle times past midnight (e.g., 25:00:00) by clipping or modulo if using real GTFS
-        dep_dt = datetime.strptime(dep_str, "%H:%M:%S").replace(year=today.year, month=today.month, day=today.day)
-        arr_dt = datetime.strptime(arr_str, "%H:%M:%S").replace(year=today.year, month=today.month, day=today.day)
-        
+        dep_str, arr_str, trip_id, route_id = result
+        target_date = arrive_by_dt.date()
         return {
-            "depart": dep_dt, "arrive": arr_dt, 
-            "trip_id": trip_id, "route": route_id,
-            "origin": orig_stop, "dest": dest_stop
+            "depart": parse_db_time(dep_str, target_date),
+            "arrive": parse_db_time(arr_str, target_date),
+            "trip_id": trip_id, "route": route_id
         }
     return None
 
-def get_live_delay(trip_id, agency):
-    # Stubbed for the demo. In production, this checks the GTFS-RT feed.
-    return 0
+def get_train_after(conn, origin_id, dest_id, depart_after_dt):
+    """FORWARD ROUTING: Finds the earliest train departing AFTER the target time."""
+    query = """
+        SELECT t1.departure_time, t2.arrival_time, t1.trip_id, t1.route_id
+        FROM stop_times t1
+        JOIN stop_times t2 ON t1.trip_id = t2.trip_id
+        WHERE t1.stop_id = ? 
+          AND t2.stop_id = ?
+          AND t1.stop_sequence < t2.stop_sequence
+          AND t1.departure_time >= ?
+        ORDER BY t1.departure_time ASC
+        LIMIT 1;
+    """
+    cur = conn.cursor()
+    target_time_str = depart_after_dt.strftime("%H:%M:%S")
+    cur.execute(query, (origin_id, dest_id, target_time_str))
+    result = cur.fetchone()
+    
+    if result:
+        dep_str, arr_str, trip_id, route_id = result
+        target_date = depart_after_dt.date()
+        return {
+            "depart": parse_db_time(dep_str, target_date),
+            "arrive": parse_db_time(arr_str, target_date),
+            "trip_id": trip_id, "route": route_id
+        }
+    return None
 
 # ==========================================
 # 3. App UI & Input
 # ==========================================
 st.title("LSP $\\leftrightarrow$ NYC Commute")
 
-# Direction Toggle
+# 1. Choose Direction
 direction = st.radio("Trip Direction:", ["Going to NYC", "Going Home (to LSP)"], horizontal=True)
 
+# 2. Choose Day and Destination
 col1, col2 = st.columns(2)
 with col1:
-    target_time = st.time_input("I want to arrive by:", value=datetime.strptime("09:00", "%H:%M").time())
+    target_date = st.date_input("Day of trip", value=datetime.today())
 with col2:
-    destination_name = st.selectbox("NYC MTA Station:", list(MTA_STOPS.keys()))
+    destination_name = st.selectbox("MTA Station:", list(MTA_STOPS.keys()))
     mta_id = MTA_STOPS[destination_name]
+
+# 3. Dynamic Time Input based on Direction
+if direction == "Going to NYC":
+    target_time = st.time_input("I want to **ARRIVE BY**:", value=datetime.strptime("09:00", "%H:%M").time())
+else:
+    target_time = st.time_input("I want to **LEAVE AT**:", value=datetime.strptime("17:00", "%H:%M").time())
 
 # ==========================================
 # 4. Routing Logic
 # ==========================================
 if st.button("Calculate Route", type="primary"):
-    target_dt = datetime.combine(datetime.now().date(), target_time)
+    target_dt = datetime.combine(target_date, target_time)
     
+    # Load Real DB or Mock DB
     if os.path.exists("timetable.sqlite"):
         conn = sqlite3.connect("timetable.sqlite")
     else:
@@ -92,21 +125,19 @@ if st.button("Calculate Route", type="primary"):
     with st.spinner("Calculating optimal route..."):
         
         if direction == "Going to NYC":
-            # 1. Final Leg: WTC to MTA Destination
+            # REVERSE ROUTING (Working backward from Arrival Time)
             mta_leg = get_train_before(conn, "WTC_MTA", mta_id, target_dt)
             if not mta_leg: st.error("No MTA trains found."); st.stop()
                 
-            # 2. Middle Leg: Exchange to WTC
             path_target = mta_leg["depart"] - timedelta(minutes=BUFFER_WTC_TO_MTA)
             path_leg = get_train_before(conn, "EXCHANGE_PATH", "WTC_PATH", path_target)
             if not path_leg: st.error("No PATH trains found."); st.stop()
                 
-            # 3. First Leg: LSP to Exchange
             hblr_target = path_leg["depart"] - timedelta(minutes=BUFFER_HBLR_TO_PATH)
             hblr_leg = get_train_before(conn, "LSP_HBLR", "EXCHANGE_HBLR", hblr_target)
             if not hblr_leg: st.error("No HBLR trains found."); st.stop()
             
-            # --- RENDER: GOING TO NYC ---
+            # Render Going to NYC
             st.success(f"To arrive at {destination_name} by {target_dt.strftime('%I:%M %p')}, leave home at **{hblr_leg['depart'].strftime('%I:%M %p')}**.")
             
             st.subheader("Step 1: NJ Transit Light Rail")
@@ -128,23 +159,21 @@ if st.button("Calculate Route", type="primary"):
             c2.metric(f"Arrive {destination_name}", mta_leg["arrive"].strftime('%I:%M %p'))
 
         else:
-            # direction == "Going Home (to LSP)"
-            # 1. Final Leg: Exchange to LSP
-            hblr_leg = get_train_before(conn, "EXCHANGE_HBLR", "LSP_HBLR", target_dt)
-            if not hblr_leg: st.error("No HBLR trains found."); st.stop()
+            # FORWARD ROUTING (Working forward from Departure Time)
+            mta_leg = get_train_after(conn, mta_id, "WTC_MTA", target_dt)
+            if not mta_leg: st.error("No MTA trains found."); st.stop()
                 
-            # 2. Middle Leg: WTC to Exchange
-            path_target = hblr_leg["depart"] - timedelta(minutes=BUFFER_HBLR_TO_PATH)
-            path_leg = get_train_before(conn, "WTC_PATH", "EXCHANGE_PATH", path_target)
+            path_target = mta_leg["arrive"] + timedelta(minutes=BUFFER_WTC_TO_MTA)
+            path_leg = get_train_after(conn, "WTC_PATH", "EXCHANGE_PATH", path_target)
             if not path_leg: st.error("No PATH trains found."); st.stop()
                 
-            # 3. First Leg: MTA Destination to WTC
-            mta_target = path_leg["depart"] - timedelta(minutes=BUFFER_WTC_TO_MTA)
-            mta_leg = get_train_before(conn, mta_id, "WTC_MTA", mta_target)
-            if not mta_leg: st.error("No MTA trains found."); st.stop()
+            hblr_target = path_leg["arrive"] + timedelta(minutes=BUFFER_HBLR_TO_PATH)
+            hblr_leg = get_train_after(conn, "EXCHANGE_HBLR", "LSP_HBLR", hblr_target)
+            if not hblr_leg: st.error("No HBLR trains found."); st.stop()
             
-            # --- RENDER: GOING HOME ---
-            st.success(f"To be back at Liberty State Park by {target_dt.strftime('%I:%M %p')}, leave {destination_name} at **{mta_leg['depart'].strftime('%I:%M %p')}**.")
+            # Render Going Home
+            final_arrival = hblr_leg["arrive"]
+            st.success(f"If you leave {destination_name} at {target_dt.strftime('%I:%M %p')}, you will be back at Liberty State Park by **{final_arrival.strftime('%I:%M %p')}**.")
             
             st.subheader("Step 1: MTA Subway")
             st.info(f"🚆 Take the **{mta_leg['route']}** going Downtown toward WTC/Fulton St.")
@@ -168,14 +197,11 @@ if st.button("Calculate Route", type="primary"):
 # 5. Dynamic Mock DB Generator
 # ==========================================
 def build_mock_database():
-    """Generates fake trains running every 15 minutes all day for testing."""
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE stop_times (trip_id TEXT, route_id TEXT, stop_id TEXT, stop_sequence INT, arrival_time TEXT, departure_time TEXT)")
     
     rows = []
-    # Loop through 24 hours
     for hour in range(0, 24):
-        # Trains at :00, :15, :30, :45
         for m in [0, 15, 30, 45]:
             dep = f"{hour:02d}:{m:02d}:00"
             
@@ -183,13 +209,9 @@ def build_mock_database():
             m_arr = m + 12
             arr_mta = f"{hour:02d}:{m_arr:02d}:00" if m_arr < 60 else f"{hour+1:02d}:{m_arr%60:02d}:00"
             for mta_stop in MTA_STOPS.values():
-                # Forward to NYC
                 rows.extend([
                     (f'MTA_F_{hour}_{m}', '1/2/3 Line', 'WTC_MTA', 1, dep, dep),
                     (f'MTA_F_{hour}_{m}', '1/2/3 Line', mta_stop, 2, arr_mta, arr_mta),
-                ])
-                # Reverse to Home
-                rows.extend([
                     (f'MTA_R_{hour}_{m}', '1/2/3 Line', mta_stop, 1, dep, dep),
                     (f'MTA_R_{hour}_{m}', '1/2/3 Line', 'WTC_MTA', 2, arr_mta, arr_mta),
                 ])
