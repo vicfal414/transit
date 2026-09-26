@@ -464,11 +464,7 @@ if not mock_mode:
         # 2. Try the search query safely
         debug_query = """
         SELECT stop_id, stop_name FROM stops 
-        WHERE stop_name LIKE '%Exchange%' 
-           OR stop_name LIKE '%WTC%' 
-           OR stop_name LIKE '%Liberty%'
-           OR stop_name LIKE '%Trade%'
-           OR stop_name LIKE '%Pavonia%'
+        WHERE stop_id LIKE 'PATH_%' OR stop_id LIKE 'NJT_%'
         """
         st.dataframe(pd.read_sql(debug_query, conn))
         
