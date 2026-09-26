@@ -16,17 +16,24 @@ st.set_page_config(page_title="Commute Router", page_icon="🚆", layout="center
 BUFFER_WTC_TO_MTA = 6
 BUFFER_HBLR_TO_PATH = 4
 
+# --- UPDATE THESE IDS ONCE YOU SEE THE DEBUGGER TABLE AT THE BOTTOM ---
+# Replace the mock IDs below with the real IDs found in your database.
+STATION_WTC_MTA = "WTC_MTA"             # e.g., "MTA_E14" or "MTA_A38"
+STATION_WTC_PATH = "WTC_PATH"           # e.g., "PATH_WTC"
+STATION_EXCHANGE_PATH = "EXCHANGE_PATH" # e.g., "PATH_EXP"
+STATION_EXCHANGE_HBLR = "EXCHANGE_HBLR" # e.g., "NJT_39504"
+STATION_LSP_HBLR = "LSP_HBLR"           # e.g., "NJT_39502"
+
 # Initialize Geocoder for Address Lookups
 geolocator = Nominatim(user_agent="my_personal_commute_app_v1")
 
 # ==========================================
-# 2. Dynamic Mock DB Generator (Moved UP to fix NameError)
+# 2. Dynamic Mock DB Generator
 # ==========================================
 def build_mock_database():
     """Generates mock schedules and coordinates for testing."""
     conn = sqlite3.connect(":memory:")
     
-    # Create tables
     conn.execute("CREATE TABLE trips (trip_id TEXT, route_id TEXT, trip_headsign TEXT)")
     conn.execute("CREATE TABLE stop_times (trip_id TEXT, stop_id TEXT, stop_sequence INT, arrival_time TEXT, departure_time TEXT)")
     conn.execute("CREATE TABLE stops (stop_id TEXT, stop_name TEXT, stop_lat REAL, stop_lon REAL)")
@@ -55,14 +62,12 @@ def build_mock_database():
             m_arr = m + 12
             arr_mta = f"{hour:02d}:{m_arr:02d}:00" if m_arr < 60 else f"{hour+1:02d}:{m_arr%60:02d}:00"
             for mta_stop in mta_destinations:
-                # Forward (Uptown / Northbound)
                 trip_f = f'MTA_F_{hour}_{m}_{mta_stop}..N'
                 trips_rows.append((trip_f, 'A', 'Inwood-207 St'))
                 stop_times_rows.extend([
                     (trip_f, 'WTC_MTA', 1, dep, dep),
                     (trip_f, mta_stop, 2, arr_mta, arr_mta),
                 ])
-                # Reverse (Downtown / Southbound)
                 trip_r = f'MTA_R_{hour}_{m}_{mta_stop}..S'
                 trips_rows.append((trip_r, 'A', 'Far Rockaway-Mott Av'))
                 stop_times_rows.extend([
@@ -115,6 +120,7 @@ def parse_db_time(time_str, target_date):
     return dt
 
 def get_train_before(conn, origin_id, dest_id, arrive_by_dt):
+    """REVERSE ROUTING: Finds the latest train arriving BEFORE the target time."""
     query = """
         SELECT t1.departure_time, t2.arrival_time, t1.trip_id, tr.route_id, tr.trip_headsign
         FROM stop_times t1
@@ -129,7 +135,7 @@ def get_train_before(conn, origin_id, dest_id, arrive_by_dt):
     """
     cur = conn.cursor()
     target_time_str = arrive_by_dt.strftime("%H:%M:%S")
-    # Add the % wildcard here
+    # Added % wildcards to fix MTA direction suffixes
     cur.execute(query, (origin_id + '%', dest_id + '%', target_time_str))
     result = cur.fetchone()
     
@@ -159,7 +165,8 @@ def get_train_after(conn, origin_id, dest_id, depart_after_dt):
     """
     cur = conn.cursor()
     target_time_str = depart_after_dt.strftime("%H:%M:%S")
-    cur.execute(query, (origin_id, dest_id, target_time_str))
+    # Added % wildcards to fix MTA direction suffixes
+    cur.execute(query, (origin_id + '%', dest_id + '%', target_time_str))
     result = cur.fetchone()
     
     if result:
@@ -283,6 +290,16 @@ address_input = st.text_input("Enter NYC Destination Address:", placeholder="e.g
 # ==========================================
 # 7. Routing Execution
 # ==========================================
+
+# Determine which database to load
+if os.path.exists("timetable.sqlite"):
+    conn = sqlite3.connect("timetable.sqlite")
+    mock_mode = False
+else:
+    conn = build_mock_database()
+    st.warning("Using mock timetable data. Upload `timetable.sqlite` for real data.")
+    mock_mode = True
+
 if st.button("Calculate Route", type="primary"):
     
     if not address_input.strip():
@@ -290,12 +307,6 @@ if st.button("Calculate Route", type="primary"):
         st.stop()
         
     target_dt = datetime.combine(target_date, target_time)
-    
-    if os.path.exists("timetable.sqlite"):
-        conn = sqlite3.connect("timetable.sqlite")
-    else:
-        conn = build_mock_database()
-        st.warning("Using mock timetable data. Upload `timetable.sqlite` for real data.")
 
     with st.spinner("Finding nearest station and calculating optimal route..."):
         
@@ -319,15 +330,15 @@ if st.button("Calculate Route", type="primary"):
         if direction == "Going to NYC":
             target_train_arrival = target_dt - timedelta(minutes=walk_time)
             
-            mta_leg = get_train_before(conn, "WTC_MTA", mta_id, target_train_arrival)
+            mta_leg = get_train_before(conn, STATION_WTC_MTA, mta_id, target_train_arrival)
             if not mta_leg: st.error("No MTA trains found."); st.stop()
                 
             path_target = mta_leg["depart"] - timedelta(minutes=BUFFER_WTC_TO_MTA)
-            path_leg = get_train_before(conn, "EXCHANGE_PATH", "WTC_PATH", path_target)
+            path_leg = get_train_before(conn, STATION_EXCHANGE_PATH, STATION_WTC_PATH, path_target)
             if not path_leg: st.error("No PATH trains found."); st.stop()
                 
             hblr_target = path_leg["depart"] - timedelta(minutes=BUFFER_HBLR_TO_PATH)
-            hblr_leg = get_train_before(conn, "LSP_HBLR", "EXCHANGE_HBLR", hblr_target)
+            hblr_leg = get_train_before(conn, STATION_LSP_HBLR, STATION_EXCHANGE_HBLR, hblr_target)
             if not hblr_leg: st.error("No HBLR trains found."); st.stop()
             
             # Fetch Delays
@@ -352,10 +363,7 @@ if st.button("Calculate Route", type="primary"):
             st.caption(f"🚶 *Walk {BUFFER_WTC_TO_MTA} mins through Oculus to the Subway*")
             
             st.subheader("Step 3: MTA Subway")
-            
-            # Determine direction from trip_id suffix
             mta_direction = "Uptown" if mta_leg['trip_id'].endswith('N') else "Downtown"
-            
             st.info(f"🚆 Take the **{mta_direction} {mta_leg['route']} Train** toward **{mta_leg['headsign']}**.")
             
             c1, c2 = st.columns(2)
@@ -366,15 +374,15 @@ if st.button("Calculate Route", type="primary"):
             # direction == "Going Home"
             mta_leg_depart = target_dt + timedelta(minutes=walk_time)
             
-            mta_leg = get_train_after(conn, mta_id, "WTC_MTA", mta_leg_depart)
+            mta_leg = get_train_after(conn, mta_id, STATION_WTC_MTA, mta_leg_depart)
             if not mta_leg: st.error("No MTA trains found."); st.stop()
                 
             path_target = mta_leg["arrive"] + timedelta(minutes=BUFFER_WTC_TO_MTA)
-            path_leg = get_train_after(conn, "WTC_PATH", "EXCHANGE_PATH", path_target)
+            path_leg = get_train_after(conn, STATION_WTC_PATH, STATION_EXCHANGE_PATH, path_target)
             if not path_leg: st.error("No PATH trains found."); st.stop()
                 
             hblr_target = path_leg["arrive"] + timedelta(minutes=BUFFER_HBLR_TO_PATH)
-            hblr_leg = get_train_after(conn, "EXCHANGE_HBLR", "LSP_HBLR", hblr_target)
+            hblr_leg = get_train_after(conn, STATION_EXCHANGE_HBLR, STATION_LSP_HBLR, hblr_target)
             if not hblr_leg: st.error("No HBLR trains found."); st.stop()
             
             # Fetch Delays
@@ -388,10 +396,7 @@ if st.button("Calculate Route", type="primary"):
             st.success(f"If you leave your location at {target_dt.strftime('%I:%M %p')}, you will be back at Liberty State Park by **{final_arrival.strftime('%I:%M %p')}**.")
             
             st.subheader("Step 1: MTA Subway")
-            
-            # Determine direction from trip_id suffix
             mta_direction = "Downtown" if mta_leg['trip_id'].endswith('S') else "Uptown"
-            
             st.info(f"🚆 Take the **{mta_direction} {mta_leg['route']} Train** toward **{mta_leg['headsign']}**.")
             
             c1, c2 = st.columns(2)
@@ -410,13 +415,19 @@ if st.button("Calculate Route", type="primary"):
             c1.metric("Depart Exchange Place", hblr_actual_depart.strftime('%I:%M %p'), delta=f"{hblr_delay} min late" if hblr_delay > 0 else "On time", delta_color="inverse")
             c2.metric("Arrive Liberty State Park", final_arrival.strftime('%I:%M %p'))
 
-st.divider()
-st.subheader("Database Debugger (Find your IDs)")
-debug_query = """
-SELECT stop_id, stop_name FROM stops 
-WHERE stop_name LIKE '%Exchange Place%' 
-   OR stop_name LIKE '%World Trade Center%' 
-   OR stop_name LIKE '%Liberty State Park%'
-   OR stop_name LIKE '%Fulton%'
-"""
-st.dataframe(pd.read_sql(debug_query, conn))
+# ==========================================
+# 8. Database Debugger (Find your IDs)
+# ==========================================
+# Only show this table if we are using the real database
+if not mock_mode:
+    st.divider()
+    st.subheader("🛠 Database Debugger")
+    st.markdown("Find the exact `stop_id` for your stations in this table, and copy them into the **Configuration** section at the very top of `app.py`.")
+    debug_query = """
+    SELECT stop_id, stop_name FROM stops 
+    WHERE stop_name LIKE '%Exchange Place%' 
+       OR stop_name LIKE '%World Trade Center%' 
+       OR stop_name LIKE '%Liberty State Park%'
+       OR stop_name LIKE '%Fulton%'
+    """
+    st.dataframe(pd.read_sql(debug_query, conn))
