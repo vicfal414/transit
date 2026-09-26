@@ -24,10 +24,10 @@ STATION_WTC_MTA = [
     "MTA_G36", # R/W Trains (Cortlandt)
     "MTA_M22"  # J/Z Trains (Fulton)
 ]
-STATION_WTC_PATH = "WTC"
-STATION_EXCHANGE_PATH = "EXP"
-STATION_EXCHANGE_HBLR = "30834"
-STATION_LSP_HBLR = "30839"
+STATION_WTC_PATH = "PATH_WTC"
+STATION_EXCHANGE_PATH = "PATH_EXP"
+STATION_EXCHANGE_HBLR = "NJT_30834"
+STATION_LSP_HBLR = "NJT_30839"
 
 # Initialize Geocoder for Address Lookups
 geolocator = Nominatim(user_agent="my_personal_commute_app_v1")
