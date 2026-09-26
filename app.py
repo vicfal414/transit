@@ -451,9 +451,10 @@ if not mock_mode:
     st.markdown("Find the exact `stop_id` for your stations in this table, and copy them into the **Configuration** section at the very top of `app.py`.")
     debug_query = """
     SELECT stop_id, stop_name FROM stops 
-    WHERE stop_name LIKE '%Exchange Place%' 
-       OR stop_name LIKE '%World Trade Center%' 
-       OR stop_name LIKE '%Liberty State Park%'
-       OR stop_name LIKE '%Fulton%'
+    WHERE stop_name LIKE '%Exchange%' 
+       OR stop_name LIKE '%WTC%' 
+       OR stop_name LIKE '%Liberty%'
+       OR stop_name LIKE '%Trade%'
+       OR stop_name LIKE '%Pavonia%'
     """
     st.dataframe(pd.read_sql(debug_query, conn))
