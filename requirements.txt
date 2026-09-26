@@ -2,3 +2,4 @@ streamlit
 pandas
 gtfs-realtime-bindings
 requests
+geopy
