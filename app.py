@@ -445,16 +445,33 @@ if st.button("Calculate Route", type="primary"):
 # 8. Database Debugger (Find your IDs)
 # ==========================================
 # Only show this table if we are using the real database
+
+# ==========================================
+# 8. Database Debugger (Find your IDs)
+# ==========================================
 if not mock_mode:
     st.divider()
     st.subheader("🛠 Database Debugger")
-    st.markdown("Find the exact `stop_id` for your stations in this table, and copy them into the **Configuration** section at the very top of `app.py`.")
-    debug_query = """
-    SELECT stop_id, stop_name FROM stops 
-    WHERE stop_name LIKE '%Exchange%' 
-       OR stop_name LIKE '%WTC%' 
-       OR stop_name LIKE '%Liberty%'
-       OR stop_name LIKE '%Trade%'
-       OR stop_name LIKE '%Pavonia%'
-    """
-    st.dataframe(pd.read_sql(debug_query, conn))
+    
+    try:
+        # 1. Check if tables actually exist
+        tables_df = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table';", conn)
+        if tables_df.empty:
+            st.error("🚨 Your database is completely empty! The GitHub Action failed to download the GTFS files.")
+        else:
+            st.success(f"Tables found: {', '.join(tables_df['name'].tolist())}")
+
+        # 2. Try the search query safely
+        debug_query = """
+        SELECT stop_id, stop_name FROM stops 
+        WHERE stop_name LIKE '%Exchange%' 
+           OR stop_name LIKE '%WTC%' 
+           OR stop_name LIKE '%Liberty%'
+           OR stop_name LIKE '%Trade%'
+           OR stop_name LIKE '%Pavonia%'
+        """
+        st.dataframe(pd.read_sql(debug_query, conn))
+        
+    except Exception as e:
+        # 3. Print the true, unredacted error
+        st.error(f"Unredacted SQL Error: {e}")
