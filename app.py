@@ -209,22 +209,49 @@ def get_train_after(conn, origin_id, dest_id, depart_after_dt):
 # 4. Live Delay Data (GTFS-RT)
 # ==========================================
 def get_live_delay(trip_id, agency, route_id=None):
-    """Fetches live GTFS-RT delays for a specific trip. Returns delay in minutes."""
+    """Fetches live delays for a specific trip. Returns delay in minutes."""
     delay_minutes = 0
     try:
-        feed = gtfs_realtime_pb2.FeedMessage()
-        
         if agency == "NJT":
-            api_key = st.secrets.get("NJT_API_KEY", "")
-            if not api_key or api_key == "your_future_njt_key_here":
-                return 0 
-                
-            url = "https://api.njtransit.com/gtfs/tripupdates"
-            headers = {"Authorization": api_key}
-            res = requests.get(url, headers=headers, timeout=5)
-            feed.ParseFromString(res.content)
+            username = st.secrets.get("NJT_USERNAME", "")
+            password = st.secrets.get("NJT_PASSWORD", "")
             
+            if not username or not password:
+                return 0  # Credentials not provided yet
+                
+            # 1. Authenticate to get a temporary token
+            auth_url = "https://raildata.njtransit.com/api/TrainData/getToken"
+            auth_res = requests.post(auth_url, data={"username": username, "password": password}, timeout=5)
+            
+            if auth_res.status_code != 200:
+                return 0
+                
+            token_data = auth_res.json()
+            # Handle token structure safely (adjusts to dictionary or direct string response)
+            token = token_data.get("token") or token_data.get("UserToken") or token_data
+            if not token:
+                return 0
+
+            # 2. Query train schedules/updates using the token
+            schedule_url = "https://raildata.njtransit.com/api/TrainData/getTrainSchedule"
+            # Pass token and filter options
+            payload = {"token": token, "NJTOnly": "true"}
+            res = requests.post(schedule_url, data=payload, timeout=5)
+            
+            if res.status_code == 200:
+                data = res.json()
+                # Search through live trains for a match against your trip or train number
+                trains = data.get("TRAINS", []) if isinstance(data, dict) else data
+                for train in trains:
+                    # Match by trip reference if present
+                    if str(train.get("TRIP_ID")) == str(trip_id) or str(train.get("TRAIN_ID")) == str(trip_id):
+                        # Extract delay fields provided by NJT API (e.g., LATE_MINUTES or DEPARTURE_DELAY)
+                        delay_val = train.get("LATE_MINUTES") or train.get("DELAY") or 0
+                        delay_minutes = int(delay_val)
+                        break
+                        
         elif agency == "MTA":
+            feed = gtfs_realtime_pb2.FeedMessage()
             if route_id in ['1', '2', '3', '4', '5', '6', 'S']:
                 url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs"
             elif route_id in ['A', 'C', 'E', 'H', 'FS']:
@@ -247,16 +274,13 @@ def get_live_delay(trip_id, agency, route_id=None):
             res = requests.get(url, timeout=5)
             feed.ParseFromString(res.content)
             
-        else:
-            return 0 
-
-        for entity in feed.entity:
-            if entity.HasField('trip_update') and entity.trip_update.trip.trip_id == str(trip_id):
-                if len(entity.trip_update.stop_time_update) > 0:
-                    delay_seconds = entity.trip_update.stop_time_update[0].departure.delay
-                    delay_minutes = int(delay_seconds / 60)
-                    break
-                    
+            for entity in feed.entity:
+                if entity.HasField('trip_update') and entity.trip_update.trip.trip_id == str(trip_id):
+                    if len(entity.trip_update.stop_time_update) > 0:
+                        delay_seconds = entity.trip_update.stop_time_update[0].departure.delay
+                        delay_minutes = int(delay_seconds / 60)
+                        break
+                        
     except Exception as e:
         print(f"Live data error for {agency}: {e}")
         
